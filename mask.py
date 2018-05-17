@@ -1,6 +1,6 @@
 import fiona
 import rasterio
-from rasterio.tools.mask import mask
+from rasterio import mask
 
 
 

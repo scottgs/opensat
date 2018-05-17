@@ -1,8 +1,9 @@
 import numpy
+import io
 import json
 import rasterio
-from rasterio.warp import reproject, RESAMPLING, transform, transform_bounds
-
+from rasterio.warp import reproject, transform, transform_bounds
+from rasterio.enums import Resampling
 from skimage import transform as sktransform
 from skimage.util import img_as_ubyte
 from skimage.exposure import rescale_intensity
@@ -12,8 +13,6 @@ import os
 
 warnings.filterwarnings("ignore")
 
-
-
 # Stacking bands is based on landsat-util code
 
 class Processing(object):
@@ -22,7 +21,7 @@ class Processing(object):
     def __init__(self, scene, bands, satellite):
         self.bands_values = bands
         self.projection = {'init': 'epsg:3857'}
-        self.dst_crs = {'init': u'epsg:3857'}
+        self.dst_crs = {'init': 'epsg:3857'}
         self.satellite = satellite
         if self.satellite == "landsat":
             self.bands = [scene + "_B" + band + ".TIF" for band in bands]
@@ -76,8 +75,8 @@ class Processing(object):
                                                                    [output['lr']['x'][0]],
                                                                    [output['lr']['y'][0]])
 
-            dst_corner_ys = [output[k]['y'][1][0] for k in output.keys()]
-            dst_corner_xs = [output[k]['x'][1][0] for k in output.keys()]
+            dst_corner_ys = [output[k]['y'][1][0] for k in list(output.keys())]
+            dst_corner_xs = [output[k]['x'][1][0] for k in list(output.keys())]
             y_pixel = abs(max(dst_corner_ys) - min(dst_corner_ys)) / shape[0]
             x_pixel = abs(max(dst_corner_xs) - min(dst_corner_xs)) / shape[1]
 
@@ -113,7 +112,7 @@ class Processing(object):
 
     def _warp(self, proj_data, bands, new_bands):
         for i, band in enumerate(bands):
-            print "Projecting band " +  self.bands[i]
+            print("Projecting band " +  self.bands[i])
             reproject(band, new_bands[i], src_transform=proj_data['transform'], src_crs=proj_data['crs'],
                       dst_transform=proj_data['dst_transform'], dst_crs=self.dst_crs, resampling=RESAMPLING.nearest,
                       num_threads=2)
@@ -143,15 +142,15 @@ class Processing(object):
             output.write_band(i + 1, img_as_ubyte(band))
 
             new_bands[i] = None
-        print "Writing to file " + self.scene + self.bands_values + ".TIF"
-        print "This file is saved to " + self.output_file
+        print("Writing to file " + self.scene + self.bands_values + ".TIF")
+        print("This file is saved to " + self.output_file)
         return self.output_file
 
     def _color_correction(self, band, band_id, low, coverage):
         if self.bands == [4, 5]:
             return band
         else:
-            print "Color correcting band " + band_id
+            print("Color correcting band " + band_id)
             p_low, cloud_cut_low = self._percent_cut(band, low, 100 - (coverage * 3 / 4))
             temp = numpy.zeros(numpy.shape(band), dtype=numpy.uint16)
             cloud_divide = 65000 - coverage * 100
@@ -181,7 +180,7 @@ class Processing(object):
                 perc = data["cloudyPixelPercentage"]
                 if perc == 0:
                     perc = 0.1
-        print "The cloud coverage is " + str(perc) + "%"
+        print("The cloud coverage is " + str(perc) + "%")
         return perc
 
     def run(self):
@@ -190,7 +189,7 @@ class Processing(object):
             (String) the path to the processed image
         """
 
-        print 'Image processing started for scene ' + self.scene + " and bands " + self.bands_values
+        print('Image processing started for scene ' + self.scene + " and bands " + self.bands_values)
 
         bands = self._read_bands()
         image_data = self._get_image_data()
@@ -227,7 +226,7 @@ class PanSharpen(Processing):
             (String) the path to the processed image
         """
 
-        print 'PanSharpened Image processing started for bands'
+        print('PanSharpened Image processing started for bands')
 
 
         bands = self._read_bands()
@@ -269,12 +268,12 @@ class PanSharpen(Processing):
         # Read coverage from QBA
         coverage = self._calculate_cloud_ice_perc()
 
-        print"Final Steps"
+        print("Final Steps")
 
         output = rasterio.open(self.output_file, 'w', **kwargs)
 
         for i, band in enumerate(new_bands):
-            print "started final step for " + str(i)
+            print("started final step for " + str(i))
             # Color Correction
             band = numpy.multiply(band, pan)
             band = self._color_correction(band, self.bands[i], 0, coverage)
@@ -283,13 +282,13 @@ class PanSharpen(Processing):
 
             new_bands[i] = None
 
-        print "Writing to file"
+        print("Writing to file")
 
         return self.output_file
 
     def _pansize(self, bands):
 
-        print 'Calculating Pan Ratio'
+        print('Calculating Pan Ratio')
 
         m = numpy.add(bands[0], bands[1])
         m = numpy.add(m, bands[2])
@@ -301,7 +300,7 @@ class PanSharpen(Processing):
         # self.output("Rescaling", normal=True, arrow=True)
 
         for key, band in enumerate(bands):
-            print "processing"
+            print("processing")
             # self.output("band %s" % self.bands[key], normal=True, color='green', indent=1)
             bands[key] = sktransform.rescale(band, 2)
             bands[key] = (bands[key] * 65535).astype('uint16')

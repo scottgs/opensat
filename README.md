@@ -84,12 +84,12 @@ $ python opensat.py download -s LC80020252016253LGN00 -b 2,3,4 -p 4328 -m mask_f
 
 
 
-## == T0-DO ==
+## == TODO ==
 
 1.Add NDVI calculations
 
 2.Generate opensat_info.json --> metafile with all operations.
 
-3.Test and restructure. Create parent class for Landsat and Sentinal
+3.Test and restructure. Create parent class for Landsat and Sentinel
 
 4.Package as a command line tool. Follow this tutorial https://python-packaging.readthedocs.io/en/latest/

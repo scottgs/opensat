@@ -3,10 +3,14 @@ import datetime
 import os
 import requests
 import sys
+import gdal
+import numpy as np
+import scipy as sp
 from tqdm import tqdm
 from processing import *
 from mask import *
-
+import Landsat
+import Sentinel
 
 
 parser = argparse.ArgumentParser()
@@ -18,6 +22,8 @@ parser.add_argument("-d", "--date", help="satellite date")
 parser.add_argument("-c", "--clouds", help="prc of clouds")
 parser.add_argument("-p", "--processing", help="prc of clouds")
 parser.add_argument("-m", "--mask", help="prc of clouds")
+parser.add_argument("-i", "--image", help="Image file name")
+parser.add_argument("-t", "--transforms", help="transform(s) to perform. Transforms seperated by \',\'")
 args = parser.parse_args()
 
 
@@ -27,68 +33,31 @@ class bcolors:
     FAIL = '\033[91m'
     ENDC = '\033[0m'
 
-
-class Landsat:
-    'Generates attributes for Landsat images'
-
-    def __init__(self, scene, path):
-      if scene != None:
-        self.scene = scene
-        self.path = scene[3:6]
-        self.row = scene[6:9]
-        self.band_url = "http://landsat-pds.s3.amazonaws.com/L8/" + self.path + "/" + self.row + "/" + self.scene + "/" + self.scene
-
-      elif scene == None:
-        path = path.split(',')
-        self.path = path[0]
-        self.row = path[1]
-        self.api_url = "https://api.developmentseed.org/satellites?search=satellite_name:landsat-8+AND+((path:" + self.path + "+AND+row:" + self.row + "))&limit=2000"
-
-    def get_all_bands(self):
-        return ["_B1.TIF", "_B2.TIF", "_B3.TIF", "_B4.TIF", "_B5.TIF", "_B6.TIF", "_B7.TIF", "_B8.TIF", "_B9.TIF", "_B10.TIF", "_B11.TIF", "_BQA.TIF", "_MTL.txt"]
-
-
-class Sentinel:
-    'Generates attributes for Sentinel images'
-
-    def __init__(self, scene, path):
-      if scene != None:
-        self.scene = scene
-        self.utm_code = scene[18:20]
-        self.lat_band = scene[20]
-        self.square = scene[21:23]
-        self.year = scene[9:13]
-        self.month = scene[13:15]
-        self.day =  scene[15:17]
-        self.sequence = scene[-1]
-        if self.month[0] == "0": #check for zeroes
-            self.month = self.month[1]
-        if self.day[0] == "0":
-            self.day = self.day[1]
-        self.band_url = "http://sentinel-s2-l1c.s3.amazonaws.com/tiles/" + self.utm_code + "/" + self.lat_band + "/" + self.square + "/" + self.year + "/" + self.month + "/" + self.day + "/" + self.sequence + "/"
-
-      elif scene == None:
-        self.utm_code = path[0:2]
-        self.lat_band = path[2]
-        self.square = path[3:5]
-        self.api_url = "https://api.developmentseed.org/satellites?search=satellite_name:sentinel-2+AND+((grid_square:" + self.square + "+AND+latitude_band:" + self.lat_band + "+AND+utm_zone:" + self.utm_code + "))&limit=2000"
-
-    def get_all_bands(self):
-        return ["B01.jp2", "B02.jp2", "B03.jp2", "B04.jp2", "B05.jp2", "B06.jp2", "B07.jp2", "B08.jp2", "B09.jp2", "B10.jp2", "B11.jp2", "B12.jp2", "tileInfo.json"]
-
-
-
 command = args.command.lower()   #type of command
 scene = args.scene  #scene ID
+image = args.image
+
+tokens = args.transforms.split('/')
+transforms = []
+params = []
+for i in range(0, len(tokens)):
+    params.append([])
+for i in range(0, len(tokens)):
+    #print(str(i))
+    transforms.append( tokens[i].split('[')[0] )
+    tmp = (tokens[i].split('[')[1]).replace("]", "")
+    print(str( len(params) ))
+    params[i] = ( tmp.split(",") )
+print(str(transforms))
+
 location = args.location  #scene path
 processing_bands = args.processing
 mask = args.mask
 search_matches = []  #list of bands IDs
 
-
 def get_list(pic):  #get json from developmentseed API
     api_url = getattr(pic, 'api_url')
-    print api_url
+    print(api_url)
     r = requests.get(api_url)
     status = r.status_code
     if status == 200:
@@ -99,7 +68,7 @@ def get_list(pic):  #get json from developmentseed API
 
 def create_directory(pic): #check if directory exists and craete if needed
     home = os.path.expanduser("~")
-    pictures_directory = home + "/openasat/"
+    pictures_directory = home + "/opensat/"
     if not os.path.exists(pictures_directory):
         os.mkdir(os.path.expanduser(pictures_directory))
 
@@ -137,7 +106,7 @@ def download(pic):
         local_filename = url.split('/')[-1]
         check = os.path.isfile(dowloaded_path + "/" + local_filename)
         if check == True:
-            print local_filename + " is already downloaded"
+            print(local_filename + " is already downloaded")
         else:
             for i in range(10):
                 try:
@@ -146,15 +115,15 @@ def download(pic):
                     local_filename = url.split('/')[-1]
                     headers = response.headers
                     if "content-length" not in headers:
-                        print bcolors.FAIL + "Ooops... SERVER ERROR. Looks like " + local_filename + " doesn't exist" + bcolors.ENDC
+                        print(bcolors.FAIL + "Ooops... SERVER ERROR. Looks like " + local_filename + " doesn't exist" + bcolors.ENDC)
                     else:
-                        print "Downloading " + local_filename
-                        file_chunk_size = int(headers['content-length'])/99
+                        print("Downloading " + local_filename)
+                        file_chunk_size = int(int(headers['content-length'])/99)
                         with open(dowloaded_path + "/" + local_filename, 'wb') as f:
                             for chunk in tqdm(response.iter_content(chunk_size = file_chunk_size), unit='%'):
                                 f.write(chunk)
-                        print bcolors.OKGREEN + "Success! " + local_filename + " is downloaded!" + bcolors.ENDC
-                        print "This file is saved to " + dowloaded_path + "\n"
+                        print(bcolors.OKGREEN + "Success! " + local_filename + " is downloaded!" + bcolors.ENDC)
+                        print("This file is saved to " + dowloaded_path + "\n")
                 except requests.exceptions.Timeout:
                     continue
                 break
@@ -190,8 +159,6 @@ def bulk_objects(): # download multiple scenes
         processing(processing_bands)
 
 
-
-
 def download_yes_no(question): #bulk download prompt
     valid = {"yes": True, "y": True, "ye": True,
              "no": False, "n": False}
@@ -200,7 +167,7 @@ def download_yes_no(question): #bulk download prompt
     choice = raw_input().lower()
     if choice in valid:
         if valid[choice] == True:
-            print "Downloading collection of scenes..."
+            print("Downloading collection of scenes...")
             bulk_objects()
     else:
         sys.stdout.write(bcolors.FAIL + "Invalid answer. Please respond with 'yes' or 'no'.\n" + bcolors.ENDC)
@@ -208,27 +175,27 @@ def download_yes_no(question): #bulk download prompt
 
 def search_results(pic):  #print search results
     search = get_list(pic)
-    print bcolors.OKGREEN + "===== List of scenes: =====" + bcolors.ENDC + "\n"
+    print(bcolors.OKGREEN + "===== List of scenes: =====" + bcolors.ENDC + "\n")
 
     def print_match():
         search_matches.append({'id': scene["scene_id"], 'clouds': scene["cloud_coverage"]})
-        print "scene id: " + bcolors.OKGREEN + scene["scene_id"] + bcolors.ENDC
-        print "date:", scene["date"]
-        print "cloud coverage:", str(scene["cloud_coverage"]) + "%"
-        print "preview:", scene["thumbnail"] + "\n"
+        print("scene id: " + bcolors.OKGREEN + scene["scene_id"] + bcolors.ENDC)
+        print("date:", scene["date"])
+        print("cloud coverage:", str(scene["cloud_coverage"]) + "%")
+        print ("preview:", scene["thumbnail"] + "\n")
 
     def print_summary():
         match_cases = len(search_matches)
         min_cloud = min(search_match['clouds'] for search_match in search_matches)
         max_cloud = max(search_match['clouds'] for search_match in search_matches)
-        print "\n======= SEARCH SUMMARY ======="
+        print("\n======= SEARCH SUMMARY =======")
         if match_cases > 0:
-            print bcolors.OKGREEN + str(match_cases) + " scenes were found for the search area" + bcolors.ENDC
-            print bcolors.OKGREEN + "The min cloud coverage is " + str(min_cloud) + "%" + bcolors.ENDC
-            print bcolors.OKGREEN + "The max cloud coverage is "  +  str(max_cloud) + "%" + bcolors.ENDC
+            print(bcolors.OKGREEN + str(match_cases) + " scenes were found for the search area" + bcolors.ENDC)
+            print(bcolors.OKGREEN + "The min cloud coverage is " + str(min_cloud) + "%" + bcolors.ENDC)
+            print(bcolors.OKGREEN + "The max cloud coverage is "  +  str(max_cloud) + "%" + bcolors.ENDC)
             download_yes_no("Do you want to download all scenes? " + "[y/n]")
         else:
-            print bcolors.FAIL + "No results were found" + bcolors.ENDC
+            print(bcolors.FAIL + "No results were found" + bcolors.ENDC)
 
 
     if (args.clouds != None) & (args.date != None): #check for cloud and date conditions
@@ -265,6 +232,89 @@ def search_results(pic):  #print search results
         print_summary()
 
 
+def get_image_to_transform():
+    home = os.path.expanduser("~")
+
+    # Might be useful later, but not utilized currently
+    if scene != None and scene[0] == "L":
+        pathName = home + "/opensat/landsat/" + scene + "/opensat_info.json"
+    elif scene != None and scene[0] == "S":
+        pathName = home + "opensat/sentinel/" + scene + "/opensat_info.json"
+
+    pathName = home + "/opensat/opensat_info.json"
+
+    # Load existing JSON data file
+    try:
+        with open(pathName) as f:
+            data = json.load(f)
+    except json.decoder.JSONDecodeError:
+        data = []
+
+    # Check if the operation command specified exists already
+    try:
+        imageJSONIndex = data[image]
+    except KeyError:
+        imageJSONIndex = -1;
+
+    tmp = image
+
+    # If it does not exist, add it and perform the operation
+    if imageJSONIndex == -1:
+        data[image] = {"transform":{"name":"", "params":[]}, "variants":{}}
+    else:
+        # Save a reference the data list at the found index
+        arr = data[image]["variants"]
+        foundTransforms = []
+        searchStr = image.split('.')[0] + "_" + transforms[0] + params[0][0] + "." + image.split('.')[1]
+        # Run while the list of transforms is not empty
+        while transforms != []:
+            print("Attempting to find requested image and transform...")
+            found = -1 # Flag for breaking the loop
+            # Iterate through the child array and look for matching transform
+            for i in range(0, len(arr)):
+                try:
+                    if arr[searchStr]["transform"]["name"] == transforms[0] and validate_transform_params(arr, searchStr) != -1:
+                        print("Previously transformed image found! The image " + searchStr + " was transformed using " + transforms[0])
+                        foundTransforms.append(transforms.pop(0)) # Remove the first transform
+                        params.pop(0)
+                        # Will return to tell what image to start transforming
+                        tmp = searchStr
+
+                        arr = arr[searchStr]["variants"]
+                        found = 1
+                        break
+                except KeyError:
+                    break
+            # If not matching transform is found, break the loop
+            if found == -1:
+                #data[image]["variants"][searchStr] = {"transform":{"name":transforms[0], "params":params[0]}, "variants":{}}
+                arr[searchStr] = {"transform":{"name":transforms[0], "params":params[0]}, "variants":{}}
+                print(str(arr))
+                break
+            if transforms != []:
+                searchStr = searchStr.split('.')[0] + "_" + transforms[0] + "." + searchStr.split('.')[1]
+
+        print("The closest image the specified image and transform(s) is: " + str(tmp) + " which has had the " + str(foundTransforms) + " transforms performed.")
+        if transforms != []:
+            print("Run the " + str(transforms) + " transforms on the image " + str(tmp) + " to get the desired result.")
+
+        # TODO: Once transforms are added, add a for loop to cycle through all
+        # reamining members of 'transforms' and perform the specified transforms
+        # in order
+
+    # Save new data back to JSON
+    with open(pathName, 'w') as outfile:
+        json.dump(data, outfile, sort_keys = True, indent = 4, ensure_ascii = False)
+
+    return tmp
+
+def validate_transform_params(arr, searchStr):
+    for i in range(0, len(arr[searchStr]["transform"]["params"])):
+        #print("Comparing: " + str(arr[searchStr]["transform"]["params"][i]) + " and " + str(params[i]))
+        if arr[searchStr]["transform"]["params"][i] != params[0][i]:
+            return -1
+    return 1;
+
 if scene == None and location != None:
     if "," in location:
         satellite = "landsat"
@@ -281,10 +331,63 @@ if command == "search":
 elif command == "download":
     if scene != None and scene[0] == "L": # Check satellite and type of command
         satellite = "landsat"
-        picture = Landsat(scene, None)
+        picture = Landsat.Landsat(scene, None)
     if scene != None and scene[0] == "S":
         satellite = "sentinel"
-        picture = Sentinel(scene, None)
+        picture = Sentinel.Sentinel(scene, None)
     download(picture)
     if processing_bands != None:
         processing(processing_bands)
+
+# TODO: Update for other operation commands
+elif command == "transform" and image != "" and transforms != []:
+    # Get the image that we should actually transforms
+    # This will also alter the list of transforms/params needed to execute
+    img = get_image_to_transform()
+
+    #Open existing dataset
+    src_img = gdal.Open(img)
+
+    #Open output format driver, see gdal_translate --formats for list
+    format = "GTiff"
+    driver = gdal.GetDriverByName(format)
+
+    # New filename for the transformed image
+    dst_img = image.split('.')[0]
+    for i in range(0, len(transforms)):
+        dst_img = dst_img + "_" + transforms[i] + params[i][0]
+    dst_img = dst_img + "." + image.split('.')[1]
+
+    res = []
+
+    print(str(transforms))
+    #print(str(params))
+
+    if transforms != []:
+        for i in range(0, len(transforms)):
+            np_arr = src_img.GetRasterBand(1).ReadAsArray()
+            if transforms[i] == "rotate":
+                res = sp.ndimage.rotate(np_arr, float(params[i][0]))
+            elif transforms[i] == "denoise":
+                res = sp.ndimage.gaussian_filter(np_arr, float(params[i][0]))
+            elif transforms[i] == "erosion":
+                res = sp.ndimage.grey_erosion(np_arr, structure=np.ones((int(params[i][0]),int(params[i][1])))).astype(np_arr.dtype)
+            elif transforms[i] == "dilation":
+                res = sp.ndimage.grey_dilation(np_arr, structure=np.ones((int(params[i][0]),int(params[i][1])))).astype(np_arr.dtype)
+            elif transforms[i] == "open":
+                res = sp.ndimage.grey_opening(np_arr, structure=np.ones((int(params[i][0]),int(params[i][1])))).astype(np_arr.dtype)
+            elif transforms[i] == "close":
+                res = sp.ndimage.grey_closing(np_arr, structure=np.ones((int(params[i][0]),int(params[i][1])))).astype(np_arr.dtype)
+            elif transforms[i] == "tophat":
+                res = sp.ndimage.white_tophat(np_arr, structure=np.ones((int(params[i][0]),int(params[i][1])))).astype(np_arr.dtype)
+            elif transforms[i] == "sharpen":
+                res = np_arr + float(params[i][0]) * (np_arr - np_arr)
+            #elif transforms[i] == "scale":
+            #elif transforms[i] == "translate":
+
+    else:
+        print("Image with the desired transforms already exists under filename:" + img)
+
+    if res != []:
+        sp.misc.imsave(dst_img, res)
+    #driver.CreateCopy(dst_img, src_img, 0)
